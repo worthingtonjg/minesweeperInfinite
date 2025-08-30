@@ -30,7 +30,7 @@ public class WorldRenderer : MonoBehaviour
     public int firstClickSafeRadius = 1;
 
     [Header("Streaming")]
-    public Camera targetCamera;       
+    public Camera targetCamera;
     [Tooltip("Extra grid cells to draw beyond the viewport on all sides.")]
     public int viewPaddingCells = 2;
     [Tooltip("Cap how many new cells we instantiate per frame.")]
@@ -38,15 +38,21 @@ public class WorldRenderer : MonoBehaviour
     [Tooltip("Cap how many offscreen cells we destroy per frame.")]
     public int maxRemovalsPerFrame = 4000;
 
+    [Header("Reveal FX")]
+    public float revealStaggerPerCell = 0.012f; // seconds per cell (Manhattan dist)
+    public float revealDuration = 0.12f;
+
     private World world;
     private readonly Dictionary<(int gx, int gy), GameObject> cellObjects = new();
     private readonly Dictionary<(int gx, int gy), TextMeshPro> numberLabels = new();
     private readonly HashSet<(int gx, int gy)> drawnSet = new();
+    private Vector2Int lastRevealOrigin = new Vector2Int(int.MinValue, int.MinValue);
 
     void Start()
     {
         GameState.Instance.ResetRun();
 
+        seed = Random.Range(0, int.MaxValue);
         world = new World(seed, mineDensity, chunkSize);
         if (targetCamera == null) targetCamera = Camera.main;
 
@@ -132,7 +138,7 @@ public class WorldRenderer : MonoBehaviour
     /// <summary>
     /// Draw a single global cell.
     /// </summary>
-    private void DrawCell(int gx, int gy)
+    private void DrawCell(int gx, int gy, bool justRevealed = false)
     {
         if (cellObjects.ContainsKey((gx, gy))) return;
 
@@ -155,6 +161,23 @@ public class WorldRenderer : MonoBehaviour
             0f
         );
         go.transform.localScale = Vector3.one * cellSize;
+
+        if (justRevealed && state == CellState.Revealed)
+        {
+            // Manhattan or Euclidean—your choice
+            int manhattan = Mathf.Abs(gx - lastRevealOrigin.x) + Mathf.Abs(gy - lastRevealOrigin.y);
+            float delay = manhattan * revealStaggerPerCell;
+
+            // Debug to verify different delays
+            Debug.Log($"FX delay for ({gx},{gy}): {delay:0.000}s");
+
+            var fx = go.AddComponent<CellRevealFX>();
+            fx.delay = delay;
+            fx.duration = revealDuration;
+            fx.endScale = cellSize;
+
+            fx.ConfigureAndPlay();
+        }
 
         // If revealed & not a mine, show neighbor count if > 0
         if (world.GetCellState(gx, gy) == CellState.Revealed && !world.IsMine(gx, gy))
@@ -192,7 +215,7 @@ public class WorldRenderer : MonoBehaviour
         return new Vector2Int(gx, gy);
     }
 
-    public void RefreshCell(int gx, int gy)
+    public void RefreshCell(int gx, int gy, bool justRevealed = false)
     {
         if (!cellObjects.TryGetValue((gx, gy), out var go)) return;
 
@@ -208,13 +231,7 @@ public class WorldRenderer : MonoBehaviour
         }
 
         // Redraw with updated state
-        DrawCell(gx, gy);
-    }
-
-    public void RevealCell(int gx, int gy)
-    {
-        world.RevealCell(gx, gy);
-        RefreshCell(gx, gy);
+        DrawCell(gx, gy, justRevealed);
     }
 
     public void ToggleFlag(int gx, int gy)
@@ -228,6 +245,8 @@ public class WorldRenderer : MonoBehaviour
     /// </summary>
     public void RevealFlood(int gx, int gy)
     {
+        lastRevealOrigin = new Vector2Int(gx, gy);
+
         // Ensure first-click safety (does nothing after the first time)
         world.EnsureFirstClickSafety(gx, gy, firstClickSafeRadius);
 
@@ -235,7 +254,8 @@ public class WorldRenderer : MonoBehaviour
         if (world.IsMine(gx, gy))
         {
             world.RevealCell(gx, gy); // ensure the bomb shows visually
-            RefreshCell(gx, gy);
+            RefreshCell(gx, gy, true);
+            RevealAllVisibleMines(animate: true);
             GameState.Instance?.KillPlayer();
             return; // do not proceed into flood/neighbor logic
         }
@@ -252,7 +272,7 @@ public class WorldRenderer : MonoBehaviour
         for (int i = 0; i < changed.Count; i++)
         {
             var c = changed[i];
-            RefreshCell(c.x, c.y);
+            RefreshCell(c.x, c.y, true);
         }
     }
 
@@ -276,12 +296,29 @@ public class WorldRenderer : MonoBehaviour
             for (int i = 0; i < changed.Count; i++)
             {
                 var c = changed[i];
-                RefreshCell(c.x, c.y);
+                RefreshCell(c.x, c.y, true);
             }
         }
 
         // Also refresh the center cell (keeps number label consistent)
         RefreshCell(gx, gy);
     }
+    
+    private void RevealAllVisibleMines(bool animate = true)
+{
+    // Iterate only cells we’ve actually instantiated/drawn.
+    foreach (var key in drawnSet)
+    {
+        int gx = key.Item1;
+        int gy = key.Item2;
+
+        if (world.IsMine(gx, gy) && world.GetCellState(gx, gy) != CellState.Revealed)
+        {
+            world.RevealCell(gx, gy);
+            // mark as just revealed so your FX can play (or set animate=false to skip)
+            RefreshCell(gx, gy, justRevealed: animate);
+        }
+    }
+}
 
 }
