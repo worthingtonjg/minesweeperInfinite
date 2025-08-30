@@ -53,3 +53,7 @@ sysinfo.txt
  
 # Crashlytics generated file
 crashlytics-build.properties
+
+# Allow the GitHub Pages docs folder to be tracked
+!docs/
+!docs/**
